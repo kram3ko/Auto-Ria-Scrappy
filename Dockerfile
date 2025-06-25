@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apk add --no-cache gcc musl-dev linux-headers
 
 WORKDIR /src
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock requirements.txt ./
 
 # Install dependencies, sync with uv, and clean up unnecessary files
 RUN pip install --no-cache-dir uv \
@@ -14,4 +14,3 @@ RUN pip install --no-cache-dir uv \
 
 # Copy the rest of the application code into the container
 COPY . .
-CMD ["sh", "-c", "alembic upgrade head && python -m src.parse"]

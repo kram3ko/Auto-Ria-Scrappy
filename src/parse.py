@@ -13,7 +13,7 @@ from src.database.postgres_db import get_postgresql_db_contextmanager
 from src.models.models import ParseCarModel
 from src.config.settings import get_settings
 
-URL = "https://auto.ria.com/uk/car/used/"
+BASE_URL = "https://auto.ria.com/uk/search/?indexName=auto&abroad=2&custom=3&page={page}&countpage=100"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +21,8 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+
 
 
 @dataclass
@@ -252,10 +254,10 @@ async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_r
         return [], None
 
 
-async def main():
+async def fetch_all(start_page: int = 0, max_pages: int | None = None):
     settings = get_settings()
     logger.info(f"Settings loaded successfully. Connecting to DB: '{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}'")
-    logger.info("Starting parser...")
+    logger.info(f"Starting parser: start_page={start_page}, max_pages={max_pages if max_pages is not None else 'no limit'}")
 
     try:
         usd_rate, eur_rate = await get_rates()
@@ -266,16 +268,19 @@ async def main():
 
     page_count = 0
     total_processed_count = 0
-    url = URL
-    max_pages = 5
+    page_num = start_page
 
     async with httpx.AsyncClient(timeout=30.0) as client, get_postgresql_db_contextmanager() as session:
-        while url and (page_count < max_pages):
+        while True:
+            if max_pages is not None and page_count >= max_pages:
+                logger.info(f"Reached page limit of {max_pages}.")
+                break
+
+            url = BASE_URL.format(page=page_num)
             page_count += 1
-            
+
             try:
                 results, next_url = await fetch_page(client, url, usd_rate, eur_rate)
-                
                 valid_cars = [car for car in results if isinstance(car, ParseCarModel)]
                 errors = [e for e in results if isinstance(e, Exception)]
 
@@ -285,22 +290,27 @@ async def main():
                     for error in errors:
                         logger.debug(f"Page #{page_count} parsing error: {error}")
 
-
                 if valid_cars:
                     await save_cars(valid_cars, session)
                     logger.info(f"Page #{page_count}: Sent {len(valid_cars)} cars to be saved in the database.")
                     total_processed_count += len(valid_cars)
-                
-                url = next_url
-                if not url:
-                    logger.info("Reached the last page.")
+
+                # Если на странице нет машин — значит, достигли конца
+                if not valid_cars:
+                    logger.info("No more cars found, stopping.")
                     break
+
+                page_num += 1
 
             except Exception as e:
                 logger.error(f"A critical error occurred while processing page {url}: {e}")
-                break 
+                break
 
     logger.info(f"Parsing finished. Total cars processed and sent to DB: {total_processed_count}.")
+
+
+async def main():
+    await fetch_all()
 
 
 if __name__ == "__main__":

@@ -16,11 +16,14 @@ services:
 
   app:
     build: .
+    command: >
+      sh -c "alembic revision --autogenerate -m 'initial migration' &&
+      alembic upgrade head &&
+      python -m src.parse"
     env_file:
       - .env
     depends_on:
       - db
-
 
 volumes:
   autoria_db:
