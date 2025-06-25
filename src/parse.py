@@ -17,12 +17,11 @@ BASE_URL = "https://auto.ria.com/uk/search/?indexName=auto&abroad=2&custom=3&pag
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-NUM_WORKERS = 100
 
 @dataclass
 class ParseCar:
@@ -78,15 +77,17 @@ async def fix_price(price: str, usd_rate: float, eur_rate: float) -> int:
 
 
 def parse_phone_meta(soup):
-    car_id_ul = soup.find('ul', class_="mb-10-list unstyle size13 mb-15")
+    car_id_ul = soup.find("ul", class_="mb-10-list unstyle size13 mb-15")
     if not car_id_ul:
         return "Unknown", "", ""
 
     car_id = next(
-        (li.find('span', class_='bold').text.strip()
-         for li in car_id_ul.find_all('li')
-         if li.text and "ID авто" in li.text),
-        "Unknown"
+        (
+            li.find("span", class_="bold").text.strip()
+            for li in car_id_ul.find_all("li")
+            if li.text and "ID авто" in li.text
+        ),
+        "Unknown",
     )
 
     script = soup.find("script", class_=re.compile(r"js-user-secure-\d+"))
@@ -105,7 +106,7 @@ async def fetch_phone(client: httpx.AsyncClient, car_id: str, hash_: str, expire
     url = f"https://auto.ria.com/users/phones/{car_id}?hash={hash_}&expires={expires}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "X-Requested-With": "XMLHttpRequest"
+        "X-Requested-With": "XMLHttpRequest",
     }
 
     max_retries = 10
@@ -116,7 +117,7 @@ async def fetch_phone(client: httpx.AsyncClient, car_id: str, hash_: str, expire
 
             if resp.status_code == 429:
                 attempt += 1
-                await asyncio.sleep(random.randint(10, 20))
+                await asyncio.sleep(random.randint(5, 10))
                 continue
 
             if resp.status_code != 200:
@@ -135,9 +136,6 @@ async def fetch_phone(client: httpx.AsyncClient, car_id: str, hash_: str, expire
         except httpx.RequestError as e:
             print(f"Request error when fetching phone for car_id {car_id}: {e}")
             return ""
-        except ValueError as e:
-            print(f"JSON decode error for car_id {car_id}: {e}")
-            return ""
         except Exception as e:
             print(f"Unexpected error when fetching phone for car_id {car_id}: {e}")
             return ""
@@ -146,7 +144,7 @@ async def fetch_phone(client: httpx.AsyncClient, car_id: str, hash_: str, expire
     return ""
 
 
-async def fetch_car(client: httpx.AsyncClient, car_url: str, usd_rate: float, eur_rate: float):
+async def fetch_car(client: httpx.AsyncClient, car_url: str, usd_rate: float, eur_rate: float):  # noqa
     logger.debug(f"Parsing car: {car_url}")
     response = await client.get(car_url)
     response.raise_for_status()
@@ -159,8 +157,9 @@ async def fetch_car(client: httpx.AsyncClient, car_url: str, usd_rate: float, eu
     username_tag = soup.select_one("div.seller_info_name.bold a.sellerPro")
     username = username_tag.text.strip() if username_tag else ""
     car_id, hash_value, expires = parse_phone_meta(soup)
-    phone_number_raw = await fetch_phone(client, car_id, hash_value, expires)
-    phone_number = safe_int(phone_number_raw)
+    # phone_number_raw = await fetch_phone(client, car_id, hash_value, expires)
+    # phone_number = safe_int(phone_number_raw)
+    phone_number = 123
     img_tag = soup.find("img", class_="outline m-auto")
     image_url = img_tag["src"] if img_tag and img_tag.has_attr("src") else ""
 
@@ -180,8 +179,9 @@ async def fetch_car(client: httpx.AsyncClient, car_url: str, usd_rate: float, eu
         if car_number_tag and car_number_tag.contents:
             car_number = car_number_tag.contents[0].strip()
 
-        car_vin_element = (car_vin_car_number.find("span", class_="label-vin") or
-                           car_vin_car_number.find("span", class_="vin-code"))
+        car_vin_element = car_vin_car_number.find("span", class_="label-vin") or car_vin_car_number.find(
+            "span", class_="vin-code"
+        )
         if car_vin_element:
             car_vin = car_vin_element.text.strip()
 
@@ -231,59 +231,31 @@ async def save_cars(cars: list[ParseCarModel], session):
     await session.commit()
 
 
-async def producer(queue, client, usd_rate, eur_rate, start_page, max_pages):
-    page_num = start_page
-    page_count = 0
-    while True:
-        if max_pages is not None and page_count >= max_pages:
-            break
-        url = BASE_URL.format(page=page_num)
-        logger.info(f"[Producer] Fetching page {page_num}: {url}")
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.content, "lxml")
-            car_block = soup.find("div", class_="span8 box-panel") or soup.find("div", class_="result-explore fl-r m-view")
-            if not car_block:
-                logger.info(f"[Producer] No car block found on page {page_num}, stopping.")
-                break
-            car_urls = [a['href'] for a in car_block.find_all("a", class_="m-link-ticket") if a.has_attr('href')]
-            if not car_urls:
-                logger.info(f"[Producer] No car URLs found on page {page_num}, stopping.")
-                break
-            for car_url in car_urls:
-                await queue.put((car_url, usd_rate, eur_rate))
-            page_num += 1
-            page_count += 1
-        except Exception as e:
-            logger.error(f"[Producer] Error fetching page {page_num}: {e}")
-            break
-    for _ in range(NUM_WORKERS):
-        await queue.put(None)
-
-
-async def consumer(queue, client):
-    async with get_postgresql_db_contextmanager() as session:
-        while True:
-            item = await queue.get()
-            if item is None:
-                queue.task_done()
-                break
-            car_url, usd_rate, eur_rate = item
-            try:
-                car = await fetch_car(client, car_url, usd_rate, eur_rate)
-                if isinstance(car, ParseCarModel):
-                    await save_cars([car], session)
-                    # logger.info(f"[Consumer] Saved car: {car.url}")
-            except Exception as e:
-                logger.error(f"[Consumer] Error parsing car {car_url}: {e}")
-            queue.task_done()
+async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_rate: float):
+    response = await client.get(url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.content, "lxml")
+    car_block = soup.find("div", class_="span8 box-panel") or soup.find("div", class_="result-explore fl-r m-view")
+    if not car_block:
+        logger.warning("Car block not found on the page")
+        return []
+    car_urls = [a["href"] for a in car_block.find_all("a", class_="m-link-ticket") if a.has_attr("href")]
+    if not car_urls:
+        logger.warning("No car URLs found")
+        return []
+    results = await asyncio.gather(
+        *(fetch_car(client, car_url, usd_rate, eur_rate) for car_url in car_urls),
+        return_exceptions=True,
+    )
+    return results
 
 
 async def fetch_all(start_page: int = 0, max_pages: int | None = None):
     settings = get_settings()
     logger.info(f"Settings loaded successfully. Connecting to DB: '{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}'")
-    logger.info(f"Starting parser: start_page={start_page}, max_pages={max_pages if max_pages is not None else 'no limit'}")
+    logger.info(
+        f"Starting parser: start_page={start_page}, max_pages={max_pages if max_pages is not None else 'no limit'}"
+    )
 
     try:
         usd_rate, eur_rate = await get_rates()
@@ -292,19 +264,54 @@ async def fetch_all(start_page: int = 0, max_pages: int | None = None):
         logger.error(f"Could not fetch currency rates. Aborting. Error: {e}")
         return
 
-    queue = asyncio.Queue()
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        producer_task = asyncio.create_task(producer(queue, client, usd_rate, eur_rate, start_page, max_pages))
-        consumers = [asyncio.create_task(consumer(queue, client)) for _ in range(NUM_WORKERS)]
-        await producer_task
-        await queue.join()
-        for c in consumers:
-            await c
-    logger.info("Parsing finished (queue/worker mode). All cars processed and sent to DB.")
+    page_count = 0
+    total_processed_count = 0
+    page_num = start_page
+
+    async with (
+        httpx.AsyncClient(timeout=30.0) as client,
+        get_postgresql_db_contextmanager() as session,
+    ):
+        while True:
+            if max_pages is not None and page_count >= max_pages:
+                logger.info(f"Reached page limit of {max_pages}.")
+                break
+
+            url = BASE_URL.format(page=page_num)
+            page_count += 1
+
+            try:
+                logger.info(f"Fetching page_num: {page_num} (url: {url})")
+                results = await fetch_page(client, url, usd_rate, eur_rate)
+                valid_cars = [car for car in results if isinstance(car, ParseCarModel)]
+                errors = [e for e in results if isinstance(e, Exception)]
+
+                logger.info(f"Page #{page_count}: Found {len(valid_cars)} cars. Encountered {len(errors)} errors.")
+
+                if errors:
+                    for error in errors:
+                        logger.debug(f"Page #{page_count} parsing error: {error}")
+
+                if valid_cars:
+                    await save_cars(valid_cars, session)
+                    logger.info(f"Page #{page_count}: Sent {len(valid_cars)} cars to be saved in the database.")
+                    total_processed_count += len(valid_cars)
+
+                if not valid_cars:
+                    logger.info("No more cars found, stopping.")
+                    break
+
+                page_num += 1
+
+            except Exception as e:
+                logger.error(f"A critical error occurred while processing page {url}: {e}")
+                break
+
+    logger.info(f"Parsing finished. Total cars processed and sent to DB: {total_processed_count}.")
 
 
 async def main():
-    await fetch_all()
+    await fetch_all(10, 3)
 
 
 if __name__ == "__main__":

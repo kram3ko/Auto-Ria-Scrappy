@@ -14,3 +14,55 @@ dependencies = [
     "ruff>=0.12.0",
     "sqlalchemy>=2.0.41",
 ]
+
+[tool.ruff]
+# excludes
+exclude = ["versions", ".venv"]
+# max string length
+line-length = 119
+
+[tool.ruff.lint]
+# Linter Settings
+
+# E — pycodestyle (Style errors, e.g. spacing and indentation issues)
+# F — pyflakes (Errors such as unused variables, undefined names, or imports)
+# W — pycodestyle (Style warnings)
+# N — PEP8 Naming (Incorrect naming conventions for variables, classes, functions)
+# ANN — flake8-annotations (Issues with missing or incorrect type annotations)
+# UP — pyupgrade (Suggestions for modernizing code using newer Python features)
+# I — isort (Import sorting issues)
+# Q — flake8-quotes (Quote style checks – e.g. enforcing single or double quotes)
+# PL — Pylint (Stylistic issues like code duplication, PEP8 violations)
+# SIM — flake8-simplify (Simplification suggestions, e.g. redundant ifs or code)
+# ARG — flake8-unused-arguments (Checks for unused function arguments)
+
+preview = true
+ignore = [
+    "E203",
+    "E266",
+    "ANN001",
+    "ANN002",
+    "ANN003",
+    "ANN401",
+    "ANN201",
+    "N807",
+    "N818",
+    "F401",
+    "PLR2004",
+    "ANN204",
+    "PLR0913",
+    "ARG001",
+    "ARG003",
+    "PLW1508",
+    "N802",
+    "PLR0917",
+    "PLR6301",
+    "PLC2801",
+    "PLC0415",
+    "F821"
+]
+select = ["E", "F", "W", "N", "ANN", "UP", "I", "Q", "PL", "SIM", "ARG"]
+
+[tool.ruff.format]
+exclude = ["versions", ".venv"]
+quote-style = "double"  # code qoute style (using double qoutes)
