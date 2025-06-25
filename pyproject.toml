@@ -1,0 +1,13 @@
+[project]
+name = "auto-ria-scrap"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.16.2",
+    "beautifulsoup4>=4.13.4",
+    "httpx>=0.28.1",
+    "lxml>=5.4.0",
+    "selenium>=4.33.0",
+    "sqlalchemy>=2.0.41",
+]

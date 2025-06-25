@@ -1,0 +1,242 @@
+import asyncio
+import random
+import re
+import logging
+from dataclasses import dataclass
+from datetime import datetime
+
+import httpx
+from bs4 import BeautifulSoup
+
+from src.models.models import ParseCarModel
+
+URL = "https://auto.ria.com/uk/car/used/"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ParseCar:
+    url: str
+    title: str
+    price_usd: int
+    odometer: int
+    username: str
+    phone_number: int
+    image_url: str
+    images_count: int
+    car_number: str
+    car_vin: str
+    datetime_found: datetime
+
+
+async def get_rates() -> tuple[float, float]:
+    url = "https://api.privatbank.ua/p24api/pubinfo?json&exchange&coursid=5"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url)
+        data = resp.json()
+        usd = None
+        eur = None
+        for rate in data:
+            if rate["ccy"] == "USD":
+                usd = float(rate["sale"])
+            elif rate["ccy"] == "EUR":
+                eur = float(rate["sale"])
+        if usd is None or eur is None:
+            raise ValueError("Rates not found")
+        return usd, eur
+
+
+async def fix_price(price: str, usd_rate: float, eur_rate: float) -> int:
+    price = price.replace(" ", "")
+    if "$" in price:
+        return int(re.search(r"(\d+)", price).group(1))
+    elif "€" in price:
+        eur = int(re.search(r"(\d+)", price).group(1))
+        return int(eur * eur_rate / usd_rate)
+    elif "грн" in price:
+        uah = int(re.search(r"(\d+)", price).group(1))
+        return int(uah / usd_rate)
+    else:
+        raise ValueError("unexpected price format")
+
+
+def parse_phone_meta(soup):
+    car_id_ul = soup.find('ul', class_="mb-10-list unstyle size13 mb-15")
+    if not car_id_ul:
+        return "Unknown", "", ""
+
+    car_id = next(
+        (li.find('span', class_='bold').text.strip()
+         for li in car_id_ul.find_all('li')
+         if li.text and "ID авто" in li.text),
+        "Unknown"
+    )
+
+    script = soup.find("script", class_=re.compile(r"js-user-secure-\d+"))
+    if not script:
+        return car_id, "", ""
+
+    hash_value = script.get("data-hash", "")
+    expires = script.get("data-expires", "")
+    return car_id, hash_value, expires
+
+
+async def fetch_phone(client: httpx.AsyncClient, car_id: str, hash_: str, expires: str) -> int | str | None:
+    if not hash_ or not expires:
+        return ""
+
+    url = f"https://auto.ria.com/users/phones/{car_id}?hash={hash_}&expires={expires}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "X-Requested-With": "XMLHttpRequest"
+    }
+
+    max_retries = 10
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            resp = await client.get(url, headers=headers)
+
+            if resp.status_code == 429:
+                attempt += 1
+                await asyncio.sleep(random.randint(5, 10))
+                continue
+
+            if resp.status_code != 200:
+                print(f"Phone fetch failed with status {resp.status_code} for car_id {car_id}")
+                return ""
+
+            data = resp.json()
+
+            raw_phone = data.get("formattedPhoneNumber", "")
+            digits = re.sub(r"\D", "", raw_phone)
+            if len(digits) == 10:
+                digits = "38" + digits
+            phone_number = int(digits) if digits else 0
+            return phone_number
+
+        except httpx.RequestError as e:
+            print(f"Request error when fetching phone for car_id {car_id}: {e}")
+            return ""
+        except ValueError as e:
+            print(f"JSON decode error for car_id {car_id}: {e}")
+            return ""
+        except Exception as e:
+            print(f"Unexpected error when fetching phone for car_id {car_id}: {e}")
+            return ""
+
+    print(f"Max retries exceeded for car_id {car_id}")
+    return ""
+
+
+async def fetch_car(client: httpx.AsyncClient, car_url: str):
+    logger.debug(f"Parsing car: {car_url}")
+    response = await client.get(car_url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "lxml")
+    title = soup.find("h1", class_="head").text
+    price_text = soup.find("div", class_="price_value").find("strong").text
+    price_usd = await fix_price(price_text, USD, EUR)
+    odometer_text = soup.find("div", class_="base-information bold").find("span", class_="size18").text
+    odometer = int(odometer_text) * 1000
+    username_tag = soup.select_one("div.seller_info_name.bold a.sellerPro")
+    username = username_tag.text.strip() if username_tag else ""
+    car_id, hash_value, expires = parse_phone_meta(soup)
+    phone_number = await fetch_phone(client, car_id, hash_value, expires)
+    img_tag = soup.find("img", class_="outline m-auto")
+    image_url = img_tag["src"] if img_tag and img_tag.has_attr("src") else ""
+
+    show_all_elem = soup.find("div", class_="preview-gallery mhide")
+    images_count = 0
+    if show_all_elem:
+        show_all_link = show_all_elem.find("a", class_="show-all link-dotted")
+        if show_all_link and re.search(r"\d+", show_all_link.text):
+            images_count = int(re.search(r"\d+", show_all_link.text).group())
+
+    car_vin_car_number = soup.find("div", class_="t-check")
+    car_number = ""
+    car_vin = ""
+
+    if car_vin_car_number:
+        car_number_tag = car_vin_car_number.find("span", class_="state-num ua")
+        if car_number_tag and car_number_tag.contents:
+            car_number = car_number_tag.contents[0].strip()
+
+        car_vin_element = (car_vin_car_number.find("span", class_="label-vin") or
+                           car_vin_car_number.find("span", class_="vin-code"))
+        if car_vin_element:
+            car_vin = car_vin_element.text.strip()
+
+    return ParseCarModel(
+        url=car_url,
+        title=title,
+        price_usd=price_usd,
+        odometer=odometer,
+        username=username,
+        phone_number=phone_number,
+        image_url=image_url,
+        images_count=images_count,
+        car_number=car_number,
+        car_vin=car_vin,
+    )
+
+
+async def fetch_page(client: httpx.AsyncClient, url: str) -> tuple[list, str | None]:
+    try:
+        logger.info(f"Parsing page: {url}")
+        response = await client.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "lxml")
+        car_block = soup.find("div", class_="span8 box-panel") or soup.find("div", class_="result-explore fl-r m-view")
+
+        if not car_block:
+            logger.warning("Car block not found on the page")
+
+            return [], None
+
+        car_urls = [a['href'] for a in car_block.find_all("a", class_="m-link-ticket") if a.has_attr('href')]
+
+        if not car_urls:
+            logger.warning("No car URLs found")
+            return [], None
+
+        results = await asyncio.gather(*(fetch_car(client, car_url) for car_url in car_urls), return_exceptions=True)
+
+        next_link = soup.find("a", class_=re.compile(r"page-link.*js-next"))
+        next_page_url = next_link["href"] if next_link and next_link.has_attr("href") else None
+        return results, next_page_url
+
+    except httpx.RequestError as e:
+        logger.error(f"Request failed for {url}: {e}")
+        return [], None
+
+async def fetch_all_pages(client: httpx.AsyncClient, start_url: str, max_pages: int = None):
+    url = start_url
+    all_results = []
+    page = 1
+    while url:
+        results, next_url = await fetch_page(client, url)
+        all_results.extend(results)
+        if max_pages is not None and page >= max_pages:
+            break
+        url = next_url
+        page += 1
+    return all_results
+
+
+USD, EUR = asyncio.run(get_rates())
+
+
+async def main():
+    async with httpx.AsyncClient() as client:
+        content = await fetch_all_pages(client, URL, max_pages=5)
+    print(content)
+
+if __name__ == "__main__":
+    asyncio.run(main())
