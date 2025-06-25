@@ -7,7 +7,9 @@ from datetime import datetime
 
 import httpx
 from bs4 import BeautifulSoup
+from sqlalchemy.dialects.postgresql import insert
 
+from src.database.postgres_db import get_postgresql_db_contextmanager
 from src.models.models import ParseCarModel
 
 URL = "https://auto.ria.com/uk/car/used/"
@@ -187,6 +189,23 @@ async def fetch_car(client: httpx.AsyncClient, car_url: str):
     )
 
 
+async def save_cars(cars: list[ParseCarModel], session):
+    """
+    Save a list of car models to the database, ignoring duplicates.
+
+    This function uses a PostgreSQL-specific 'INSERT ... ON CONFLICT DO NOTHING'
+    to efficiently bulk-insert new cars while skipping ones that already exist
+    based on the 'uq_car_number_url' unique constraint.
+    """
+    if not cars:
+        return
+
+    stmt = insert(ParseCarModel).values([car.to_dict() for car in cars])
+    stmt = stmt.on_conflict_do_nothing(index_elements=["car_number", "url"])
+    await session.execute(stmt)
+    await session.commit()
+
+
 async def fetch_page(client: httpx.AsyncClient, url: str) -> tuple[list, str | None]:
     try:
         logger.info(f"Parsing page: {url}")
@@ -234,9 +253,26 @@ USD, EUR = asyncio.run(get_rates())
 
 
 async def main():
-    async with httpx.AsyncClient() as client:
-        content = await fetch_all_pages(client, URL, max_pages=5)
-    print(content)
+    logger.info("Starting parser...")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        cars = await fetch_all_pages(client, URL, max_pages=5)
+
+    valid_cars = [car for car in cars if isinstance(car, ParseCarModel)]
+    errors = [e for e in cars if isinstance(e, Exception)]
+
+    logger.info(f"Successfully parsed {len(valid_cars)} cars.")
+    if errors:
+        logger.warning(f"Encountered {len(errors)} errors during parsing.")
+
+    if not valid_cars:
+        logger.info("No new cars to save.")
+        return
+
+    logger.info("Connecting to the database to save new cars...")
+    async with get_postgresql_db_contextmanager() as session:
+        await save_cars(valid_cars, session)
+        logger.info(f"Finished saving cars to the database.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

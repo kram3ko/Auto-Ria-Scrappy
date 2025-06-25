@@ -23,3 +23,6 @@ class ParseCarModel(Base):
     car_number: Mapped[str] = mapped_column(String(255))
     car_vin: Mapped[str] = mapped_column(String(255), unique=False)
     datetime_found: Mapped[datetime] = mapped_column(DateTime(), server_default=func.now(), nullable=False)
+
+    def to_dict(self):
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns if c.name != "id"}

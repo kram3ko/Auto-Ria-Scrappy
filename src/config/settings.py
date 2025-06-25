@@ -1,19 +1,19 @@
 from pathlib import Path
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-class BaseAppSettings:
+
+class Settings(BaseSettings):
+    SettingsConfigDict(env_file=".env")
     BASE_DIR: Path = Path(__file__).parent.parent
-
-
-class Settings(BaseAppSettings):
     POSTGRES_DB: str = "test_db"
     POSTGRES_USER: str = "test_user"
     POSTGRES_PASSWORD: str = "test_password"
     POSTGRES_HOST: str = "test_host"
-    POSTGRES_PORT: int = "port"
+    POSTGRES_PORT: int = 5432
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
+
 
 
 def get_settings() -> Settings:
