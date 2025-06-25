@@ -250,6 +250,24 @@ async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_r
 
 
 async def fetch_all(start_page: int = 0, max_pages: int | None = None):
+    """
+     Executes the main asynchronous function.
+
+     This function serves as the entry point for running the asynchronous
+     fetch operation with specified parameters.
+
+     :param start_page: The page number to start parsing from (default: 10)
+     :type start_page: int
+     :param max_pages: The maximum number of pages to parse (default: 3)
+     :type max_pages: int
+     :returns: None
+     :rtype: None
+
+     You can specify the starting page and the number of pages to parse.
+     Example:
+         await main(start_page=5, max_pages=10)
+     """
+
     settings = get_settings()
     logger.info(f"Settings loaded successfully. Connecting to DB: '{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}'")
     logger.info(
@@ -310,7 +328,8 @@ async def fetch_all(start_page: int = 0, max_pages: int | None = None):
 
 
 async def main():
-    await fetch_all(10, 3)
+    # you can set params start page and how many pages to scrap
+    await fetch_all(start_page=0, max_pages=None)
 
 
 if __name__ == "__main__":
