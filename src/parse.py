@@ -157,9 +157,8 @@ async def fetch_car(client: httpx.AsyncClient, car_url: str, usd_rate: float, eu
     username_tag = soup.select_one("div.seller_info_name.bold a.sellerPro")
     username = username_tag.text.strip() if username_tag else ""
     car_id, hash_value, expires = parse_phone_meta(soup)
-    # phone_number_raw = await fetch_phone(client, car_id, hash_value, expires)
-    # phone_number = safe_int(phone_number_raw)
-    phone_number = 123
+    phone_number_raw = await fetch_phone(client, car_id, hash_value, expires)
+    phone_number = safe_int(phone_number_raw)
     img_tag = soup.find("img", class_="outline m-auto")
     image_url = img_tag["src"] if img_tag and img_tag.has_attr("src") else ""
 
