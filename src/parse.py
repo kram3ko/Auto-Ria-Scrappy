@@ -9,8 +9,8 @@ import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.dialects.postgresql import insert
 
-from src.config.settings import get_settings
 from src.config.logging_config import setup_logging_from_settings
+from src.config.settings import get_settings
 from src.database.postgres_db import get_postgresql_db_contextmanager
 from src.models.models import ParseCarModel
 

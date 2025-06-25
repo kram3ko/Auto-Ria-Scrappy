@@ -3,7 +3,7 @@ LABEL maintainer="volodymyr.vinohradov@gmail.com"
 ENV PYTHONUNBUFFERED=1 \
     UV_PROJECT_ENVIRONMENT="/usr/local/"
 
-RUN apk add --no-cache gcc musl-dev linux-headers
+RUN apk add --no-cache gcc musl-dev linux-headers postgresql-client
 
 WORKDIR /src
 COPY pyproject.toml uv.lock requirements.txt ./
@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir uv \
 
 # Copy the rest of the application code into the container
 COPY . .
-CMD ["sh", "-c", "alembic upgrade head && python src/db_dump_scheduler.py & python -m src.parse"]
+CMD ["sh", "-c", "alembic upgrade head && python -m src.db_dump_scheduler & python -m src.parse"]
