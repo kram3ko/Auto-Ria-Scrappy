@@ -22,6 +22,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+NUM_WORKERS = 100
 
 @dataclass
 class ParseCar:
@@ -115,7 +116,7 @@ async def fetch_phone(client: httpx.AsyncClient, car_id: str, hash_: str, expire
 
             if resp.status_code == 429:
                 attempt += 1
-                await asyncio.sleep(random.randint(5, 10))
+                await asyncio.sleep(random.randint(10, 20))
                 continue
 
             if resp.status_code != 200:
@@ -230,42 +231,59 @@ async def save_cars(cars: list[ParseCarModel], session):
     await session.commit()
 
 
-async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_rate: float) -> tuple[list, str | None]:
-    try:
-        logger.info(f"Parsing page: {url}")
-        response = await client.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, "lxml")
-        car_block = soup.find("div", class_="span8 box-panel") or soup.find("div", class_="result-explore fl-r m-view")
+async def producer(queue, client, usd_rate, eur_rate, start_page, max_pages):
+    page_num = start_page
+    page_count = 0
+    while True:
+        if max_pages is not None and page_count >= max_pages:
+            break
+        url = BASE_URL.format(page=page_num)
+        logger.info(f"[Producer] Fetching page {page_num}: {url}")
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, "lxml")
+            car_block = soup.find("div", class_="span8 box-panel") or soup.find("div", class_="result-explore fl-r m-view")
+            if not car_block:
+                logger.info(f"[Producer] No car block found on page {page_num}, stopping.")
+                break
+            car_urls = [a['href'] for a in car_block.find_all("a", class_="m-link-ticket") if a.has_attr('href')]
+            if not car_urls:
+                logger.info(f"[Producer] No car URLs found on page {page_num}, stopping.")
+                break
+            for car_url in car_urls:
+                await queue.put((car_url, usd_rate, eur_rate))
+            page_num += 1
+            page_count += 1
+        except Exception as e:
+            logger.error(f"[Producer] Error fetching page {page_num}: {e}")
+            break
+    for _ in range(NUM_WORKERS):
+        await queue.put(None)
 
-        if not car_block:
-            logger.warning("Car block not found on the page")
 
-            return [], None
-
-        car_urls = [a['href'] for a in car_block.find_all("a", class_="m-link-ticket") if a.has_attr('href')]
-
-        if not car_urls:
-            logger.warning("No car URLs found")
-            return [], None
-
-        results = await asyncio.gather(*(fetch_car(client, car_url, usd_rate, eur_rate) for car_url in car_urls),
-                                       return_exceptions=True)
-
-        next_link = soup.find("a", class_=re.compile(r"page-link.*js-next"))
-        next_page_url = next_link["href"] if next_link and next_link.has_attr("href") else None
-        return results, next_page_url
-
-    except httpx.RequestError as e:
-        logger.error(f"Request failed for {url}: {e}")
-        return [], None
+async def consumer(queue, client):
+    async with get_postgresql_db_contextmanager() as session:
+        while True:
+            item = await queue.get()
+            if item is None:
+                queue.task_done()
+                break
+            car_url, usd_rate, eur_rate = item
+            try:
+                car = await fetch_car(client, car_url, usd_rate, eur_rate)
+                if isinstance(car, ParseCarModel):
+                    await save_cars([car], session)
+                    # logger.info(f"[Consumer] Saved car: {car.url}")
+            except Exception as e:
+                logger.error(f"[Consumer] Error parsing car {car_url}: {e}")
+            queue.task_done()
 
 
 async def fetch_all(start_page: int = 0, max_pages: int | None = None):
     settings = get_settings()
     logger.info(f"Settings loaded successfully. Connecting to DB: '{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}'")
-    logger.info(
-        f"Starting parser: start_page={start_page}, max_pages={max_pages if max_pages is not None else 'no limit'}")
+    logger.info(f"Starting parser: start_page={start_page}, max_pages={max_pages if max_pages is not None else 'no limit'}")
 
     try:
         usd_rate, eur_rate = await get_rates()
@@ -274,46 +292,15 @@ async def fetch_all(start_page: int = 0, max_pages: int | None = None):
         logger.error(f"Could not fetch currency rates. Aborting. Error: {e}")
         return
 
-    page_count = 0
-    total_processed_count = 0
-    page_num = start_page
-
-    async with httpx.AsyncClient(timeout=30.0) as client, get_postgresql_db_contextmanager() as session:
-        while True:
-            if max_pages is not None and page_count >= max_pages:
-                logger.info(f"Reached page limit of {max_pages}.")
-                break
-
-            url = BASE_URL.format(page=page_num)
-            page_count += 1
-
-            try:
-                results, next_url = await fetch_page(client, url, usd_rate, eur_rate)
-                valid_cars = [car for car in results if isinstance(car, ParseCarModel)]
-                errors = [e for e in results if isinstance(e, Exception)]
-
-                logger.info(f"Page #{page_count}: Found {len(valid_cars)} cars. Encountered {len(errors)} errors.")
-
-                if errors:
-                    for error in errors:
-                        logger.debug(f"Page #{page_count} parsing error: {error}")
-
-                if valid_cars:
-                    await save_cars(valid_cars, session)
-                    logger.info(f"Page #{page_count}: Sent {len(valid_cars)} cars to be saved in the database.")
-                    total_processed_count += len(valid_cars)
-
-                if not valid_cars:
-                    logger.info("No more cars found, stopping.")
-                    break
-
-                page_num += 1
-
-            except Exception as e:
-                logger.error(f"A critical error occurred while processing page {url}: {e}")
-                break
-
-    logger.info(f"Parsing finished. Total cars processed and sent to DB: {total_processed_count}.")
+    queue = asyncio.Queue()
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        producer_task = asyncio.create_task(producer(queue, client, usd_rate, eur_rate, start_page, max_pages))
+        consumers = [asyncio.create_task(consumer(queue, client)) for _ in range(NUM_WORKERS)]
+        await producer_task
+        await queue.join()
+        for c in consumers:
+            await c
+    logger.info("Parsing finished (queue/worker mode). All cars processed and sent to DB.")
 
 
 async def main():

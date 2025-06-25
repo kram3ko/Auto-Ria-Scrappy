@@ -14,3 +14,4 @@ RUN pip install --no-cache-dir uv \
 
 # Copy the rest of the application code into the container
 COPY . .
+CMD ["sh", "-c", "alembic upgrade head && python -m src.parse"]
