@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from src.database.postgres_db import get_postgresql_db_contextmanager
 from src.models.models import ParseCarModel
+from src.config.settings import get_settings
 
 URL = "https://auto.ria.com/uk/car/used/"
 
@@ -137,14 +138,14 @@ async def fetch_phone(client: httpx.AsyncClient, car_id: str, hash_: str, expire
     return ""
 
 
-async def fetch_car(client: httpx.AsyncClient, car_url: str):
+async def fetch_car(client: httpx.AsyncClient, car_url: str, usd_rate: float, eur_rate: float):
     logger.debug(f"Parsing car: {car_url}")
     response = await client.get(car_url)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "lxml")
     title = soup.find("h1", class_="head").text
     price_text = soup.find("div", class_="price_value").find("strong").text
-    price_usd = await fix_price(price_text, USD, EUR)
+    price_usd = await fix_price(price_text, usd_rate, eur_rate)
     odometer_text = soup.find("div", class_="base-information bold").find("span", class_="size18").text
     odometer = int(odometer_text) * 1000
     username_tag = soup.select_one("div.seller_info_name.bold a.sellerPro")
@@ -200,13 +201,28 @@ async def save_cars(cars: list[ParseCarModel], session):
     if not cars:
         return
 
-    stmt = insert(ParseCarModel).values([car.to_dict() for car in cars])
+    car_data = [
+        {
+            "url": car.url,
+            "title": car.title,
+            "price_usd": car.price_usd,
+            "odometer": car.odometer,
+            "username": car.username,
+            "phone_number": car.phone_number,
+            "image_url": car.image_url,
+            "images_count": car.images_count,
+            "car_number": car.car_number,
+            "car_vin": car.car_vin,
+        }
+        for car in cars
+    ]
+    stmt = insert(ParseCarModel).values(car_data)
     stmt = stmt.on_conflict_do_nothing(index_elements=["car_number", "url"])
     await session.execute(stmt)
     await session.commit()
 
 
-async def fetch_page(client: httpx.AsyncClient, url: str) -> tuple[list, str | None]:
+async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_rate: float) -> tuple[list, str | None]:
     try:
         logger.info(f"Parsing page: {url}")
         response = await client.get(url)
@@ -225,7 +241,7 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> tuple[list, str | N
             logger.warning("No car URLs found")
             return [], None
 
-        results = await asyncio.gather(*(fetch_car(client, car_url) for car_url in car_urls), return_exceptions=True)
+        results = await asyncio.gather(*(fetch_car(client, car_url, usd_rate, eur_rate) for car_url in car_urls), return_exceptions=True)
 
         next_link = soup.find("a", class_=re.compile(r"page-link.*js-next"))
         next_page_url = next_link["href"] if next_link and next_link.has_attr("href") else None
@@ -235,43 +251,56 @@ async def fetch_page(client: httpx.AsyncClient, url: str) -> tuple[list, str | N
         logger.error(f"Request failed for {url}: {e}")
         return [], None
 
-async def fetch_all_pages(client: httpx.AsyncClient, start_url: str, max_pages: int = None):
-    url = start_url
-    all_results = []
-    page = 1
-    while url:
-        results, next_url = await fetch_page(client, url)
-        all_results.extend(results)
-        if max_pages is not None and page >= max_pages:
-            break
-        url = next_url
-        page += 1
-    return all_results
-
-
-USD, EUR = asyncio.run(get_rates())
-
 
 async def main():
+    settings = get_settings()
+    logger.info(f"Settings loaded successfully. Connecting to DB: '{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}'")
     logger.info("Starting parser...")
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        cars = await fetch_all_pages(client, URL, max_pages=5)
 
-    valid_cars = [car for car in cars if isinstance(car, ParseCarModel)]
-    errors = [e for e in cars if isinstance(e, Exception)]
-
-    logger.info(f"Successfully parsed {len(valid_cars)} cars.")
-    if errors:
-        logger.warning(f"Encountered {len(errors)} errors during parsing.")
-
-    if not valid_cars:
-        logger.info("No new cars to save.")
+    try:
+        usd_rate, eur_rate = await get_rates()
+        logger.info(f"Current rates: USD={usd_rate}, EUR={eur_rate}")
+    except Exception as e:
+        logger.error(f"Could not fetch currency rates. Aborting. Error: {e}")
         return
 
-    logger.info("Connecting to the database to save new cars...")
-    async with get_postgresql_db_contextmanager() as session:
-        await save_cars(valid_cars, session)
-        logger.info(f"Finished saving cars to the database.")
+    page_count = 0
+    total_processed_count = 0
+    url = URL
+    max_pages = 5
+
+    async with httpx.AsyncClient(timeout=30.0) as client, get_postgresql_db_contextmanager() as session:
+        while url and (page_count < max_pages):
+            page_count += 1
+            
+            try:
+                results, next_url = await fetch_page(client, url, usd_rate, eur_rate)
+                
+                valid_cars = [car for car in results if isinstance(car, ParseCarModel)]
+                errors = [e for e in results if isinstance(e, Exception)]
+
+                logger.info(f"Page #{page_count}: Found {len(valid_cars)} cars. Encountered {len(errors)} errors.")
+
+                if errors:
+                    for error in errors:
+                        logger.debug(f"Page #{page_count} parsing error: {error}")
+
+
+                if valid_cars:
+                    await save_cars(valid_cars, session)
+                    logger.info(f"Page #{page_count}: Sent {len(valid_cars)} cars to be saved in the database.")
+                    total_processed_count += len(valid_cars)
+                
+                url = next_url
+                if not url:
+                    logger.info("Reached the last page.")
+                    break
+
+            except Exception as e:
+                logger.error(f"A critical error occurred while processing page {url}: {e}")
+                break 
+
+    logger.info(f"Parsing finished. Total cars processed and sent to DB: {total_processed_count}.")
 
 
 if __name__ == "__main__":

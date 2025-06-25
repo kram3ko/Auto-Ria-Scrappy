@@ -1,20 +1,21 @@
-from pathlib import Path
+import os
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
-class Settings(BaseSettings):
-    SettingsConfigDict(env_file=".env")
-    BASE_DIR: Path = Path(__file__).parent.parent
-    POSTGRES_DB: str = "test_db"
-    POSTGRES_USER: str = "test_user"
-    POSTGRES_PASSWORD: str = "test_password"
-    POSTGRES_HOST: str = "test_host"
-    POSTGRES_PORT: int = 5432
-
-    model_config = SettingsConfigDict(env_file=".env")
-
+class Settings:
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB")
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD")
+    POSTGRES_HOST: str = os.getenv("POSTGRES_HOST")
+    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT"))
 
 
 def get_settings() -> Settings:
+    """
+    Creates and caches a Settings instance.
+    The lru_cache ensures this is only done once.
+    """
     return Settings()
