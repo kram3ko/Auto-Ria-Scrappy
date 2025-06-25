@@ -1,3 +1,5 @@
+![scrap](https://github.com/user-attachments/assets/f54396e2-5ff7-44b7-9df9-633e2d44ce61)
+
 # Auto-Ria Scraping
 
 This project is designed for automated data collection from the Auto.ria website.
