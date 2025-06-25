@@ -1,6 +1,6 @@
-![scrap](https://github.com/user-attachments/assets/f54396e2-5ff7-44b7-9df9-633e2d44ce61)
+# Auto-![scrap1](https://github.com/user-attachments/assets/45aaeb6a-e56b-49aa-900f-f1d3aec9fe7f)
 
-# Auto-Ria Scraping
+Ria Scraping
 
 This project is designed for automated data collection from the Auto.ria website.
 It allows you to get up-to-date information about vehicles, analyze listings,
