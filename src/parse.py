@@ -1,7 +1,7 @@
 import asyncio
+import logging
 import random
 import re
-import logging
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -9,9 +9,9 @@ import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.dialects.postgresql import insert
 
+from src.config.settings import get_settings
 from src.database.postgres_db import get_postgresql_db_contextmanager
 from src.models.models import ParseCarModel
-from src.config.settings import get_settings
 
 BASE_URL = "https://auto.ria.com/uk/search/?indexName=auto&abroad=2&custom=3&page={page}&countpage=100"
 
@@ -21,8 +21,6 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
-
 
 
 @dataclass
@@ -38,6 +36,13 @@ class ParseCar:
     car_number: str
     car_vin: str
     datetime_found: datetime
+
+
+def safe_int(val, default=None):
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
 
 
 async def get_rates() -> tuple[float, float]:
@@ -149,20 +154,21 @@ async def fetch_car(client: httpx.AsyncClient, car_url: str, usd_rate: float, eu
     price_text = soup.find("div", class_="price_value").find("strong").text
     price_usd = await fix_price(price_text, usd_rate, eur_rate)
     odometer_text = soup.find("div", class_="base-information bold").find("span", class_="size18").text
-    odometer = int(odometer_text) * 1000
+    odometer = (safe_int(odometer_text) * 1000) if safe_int(odometer_text) is not None else None
     username_tag = soup.select_one("div.seller_info_name.bold a.sellerPro")
     username = username_tag.text.strip() if username_tag else ""
     car_id, hash_value, expires = parse_phone_meta(soup)
-    phone_number = await fetch_phone(client, car_id, hash_value, expires)
+    phone_number_raw = await fetch_phone(client, car_id, hash_value, expires)
+    phone_number = safe_int(phone_number_raw)
     img_tag = soup.find("img", class_="outline m-auto")
     image_url = img_tag["src"] if img_tag and img_tag.has_attr("src") else ""
 
     show_all_elem = soup.find("div", class_="preview-gallery mhide")
-    images_count = 0
+    images_count = None
     if show_all_elem:
         show_all_link = show_all_elem.find("a", class_="show-all link-dotted")
         if show_all_link and re.search(r"\d+", show_all_link.text):
-            images_count = int(re.search(r"\d+", show_all_link.text).group())
+            images_count = safe_int(re.search(r"\d+", show_all_link.text).group())
 
     car_vin_car_number = soup.find("div", class_="t-check")
     car_number = ""
@@ -243,7 +249,8 @@ async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_r
             logger.warning("No car URLs found")
             return [], None
 
-        results = await asyncio.gather(*(fetch_car(client, car_url, usd_rate, eur_rate) for car_url in car_urls), return_exceptions=True)
+        results = await asyncio.gather(*(fetch_car(client, car_url, usd_rate, eur_rate) for car_url in car_urls),
+                                       return_exceptions=True)
 
         next_link = soup.find("a", class_=re.compile(r"page-link.*js-next"))
         next_page_url = next_link["href"] if next_link and next_link.has_attr("href") else None
@@ -257,7 +264,8 @@ async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_r
 async def fetch_all(start_page: int = 0, max_pages: int | None = None):
     settings = get_settings()
     logger.info(f"Settings loaded successfully. Connecting to DB: '{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}'")
-    logger.info(f"Starting parser: start_page={start_page}, max_pages={max_pages if max_pages is not None else 'no limit'}")
+    logger.info(
+        f"Starting parser: start_page={start_page}, max_pages={max_pages if max_pages is not None else 'no limit'}")
 
     try:
         usd_rate, eur_rate = await get_rates()
@@ -295,7 +303,6 @@ async def fetch_all(start_page: int = 0, max_pages: int | None = None):
                     logger.info(f"Page #{page_count}: Sent {len(valid_cars)} cars to be saved in the database.")
                     total_processed_count += len(valid_cars)
 
-                # Если на странице нет машин — значит, достигли конца
                 if not valid_cars:
                     logger.info("No more cars found, stopping.")
                     break

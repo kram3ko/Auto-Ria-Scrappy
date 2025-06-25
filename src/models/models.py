@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import String, Integer, UniqueConstraint, DateTime, func, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column
@@ -15,11 +16,11 @@ class ParseCarModel(Base):
     url: Mapped[str] = mapped_column(String(255))
     title: Mapped[str] = mapped_column(String(255))
     price_usd: Mapped[int] = mapped_column(Integer)
-    odometer: Mapped[int] = mapped_column(Integer)
+    odometer: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     username: Mapped[str] = mapped_column(String(65))
-    phone_number: Mapped[int] = mapped_column(BigInteger)
+    phone_number: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     image_url: Mapped[str] = mapped_column(String(255))
-    images_count: Mapped[int] = mapped_column(Integer)
+    images_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     car_number: Mapped[str] = mapped_column(String(255))
     car_vin: Mapped[str] = mapped_column(String(255), unique=False)
     datetime_found: Mapped[datetime] = mapped_column(DateTime(), server_default=func.now(), nullable=False)
