@@ -10,17 +10,14 @@ from bs4 import BeautifulSoup
 from sqlalchemy.dialects.postgresql import insert
 
 from src.config.settings import get_settings
+from src.config.logging_config import setup_logging_from_settings
 from src.database.postgres_db import get_postgresql_db_contextmanager
 from src.models.models import ParseCarModel
 
-BASE_URL = "https://auto.ria.com/uk/search/?indexName=auto&abroad=2&custom=3&page={page}&countpage=100"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+setup_logging_from_settings()
 logger = logging.getLogger(__name__)
+
+BASE_URL = "https://auto.ria.com/uk/search/?indexName=auto&abroad=2&custom=3&page={page}&countpage=100"
 
 
 @dataclass
@@ -251,22 +248,22 @@ async def fetch_page(client: httpx.AsyncClient, url: str, usd_rate: float, eur_r
 
 async def fetch_all(start_page: int = 0, max_pages: int | None = None):
     """
-     Executes the main asynchronous function.
+    Executes the main asynchronous function.
 
-     This function serves as the entry point for running the asynchronous
-     fetch operation with specified parameters.
+    This function serves as the entry point for running the asynchronous
+    fetch operation with specified parameters.
 
-     :param start_page: The page number to start parsing from (default: 10)
-     :type start_page: int
-     :param max_pages: The maximum number of pages to parse (default: 3)
-     :type max_pages: int
-     :returns: None
-     :rtype: None
+    :param start_page: The page number to start parsing from (default: 10)
+    :type start_page: int
+    :param max_pages: The maximum number of pages to parse (default: 3)
+    :type max_pages: int
+    :returns: None
+    :rtype: None
 
-     You can specify the starting page and the number of pages to parse.
-     Example:
-         await main(start_page=5, max_pages=10)
-     """
+    You can specify the starting page and the number of pages to parse.
+    Example:
+        await main(start_page=5, max_pages=10)
+    """
 
     settings = get_settings()
     logger.info(f"Settings loaded successfully. Connecting to DB: '{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}'")
